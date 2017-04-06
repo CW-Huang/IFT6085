@@ -1,0 +1,192 @@
+# -*- coding: utf-8 -*-
+import cPickle as pickle
+from sklearn.preprocessing import OneHotEncoder
+import lasagne
+from lasagne.layers import get_output
+from lasagne.layers import get_all_params
+from lasagne.objectives import binary_crossentropy as bc
+import theano
+import theano.tensor as T
+import numpy as np
+
+from utils import log_mean_exp
+from vae import *
+
+
+def build_graph(inpv, ep, w):
+    n, n_mc, n_iw, _ = ep.shape
+    enc_m = get_encoder()
+    enc_s = get_encoder()
+    dec = get_decoder()
+    mu = get_output(enc_m, inpv).dimshuffle(0,'x','x',1)
+    log_s = get_output(enc_s, inpv).dimshuffle(0,'x','x',1)
+    log_v = 2 * log_s
+    sigma = T.exp(log_s)
+    var = T.exp(log_s * 2)
+    z = mu + sigma * ep
+    z_reshaped = z.reshape((n * n_mc * n_iw, ds[0]))
+    rec_reshaped = get_output(dec, z_reshaped)
+    rec = rec_reshaped.reshape((n, n_mc, n_iw, ds[-1]))
+
+    # lazy modeling just using binary crossentropy (non-binarized) ...
+    log_px_z = - bc(rec, inpv.dimshuffle(0,'x','x',1))
+
+    # KL divergence
+    log_pz   = - 0.5 * (mu**2 + var)
+    log_qz_x = - 0.5 * (1 + log_v)
+    kls_d = log_qz_x - log_pz
+
+    losses_iw = - log_px_z.sum(3) + w * kls_d.sum(3)
+    losses_mc = - log_mean_exp(-losses_iw,axis=2)
+    loss = T.mean(losses_mc)
+
+    params = (get_all_params(enc_m) +
+              get_all_params(enc_s) +
+              get_all_params(dec))
+
+    return loss, params
+
+
+
+class VAE(object):
+
+    def __init__(self):
+
+        self.inpv = T.matrix('inpv')
+        self.ep = T.tensor4('ep')
+        self.w = T.scalar('w')
+        self.lr = T.scalar('lr')      # learning rate
+
+        batch_size = T.cast(self.inpv.shape[0], 'float32')
+
+        self.loss_curr, self.params_curr = build_graph(self.inpv, self.ep, self.w)
+        self.grads_curr = T.grad(self.loss_curr, self.params_curr)
+
+        self.loss_prev, self.params_prev = build_graph(self.inpv, self.ep, self.w)
+        self.grads_prev = T.grad(self.loss_prev, self.params_prev)
+
+        self.grads_accumulate = [
+            theano.shared(np.zeros(p.get_value().shape).astype(np.float32))
+            for p in self.params_curr
+        ]
+
+        self.counter = theano.shared(np.float32(0.))
+        copy_to_prev_update = zip(self.params_prev, self.params_curr)
+
+        acc_grads_update = [
+            (a, a + batch_size * g)
+            for a, g in zip(self.grads_accumulate, self.grads_prev)
+        ]
+        count_update = [(
+            self.counter, self.counter + batch_size
+        )]
+
+        reset_grads_update = [
+            (a, a * np.float32(0.))
+            for a, g in zip(self.grads_accumulate, self.grads_prev)
+        ]
+        reset_count_update = [(
+            self.counter, np.float32(0.)
+        )]
+
+
+        self.deltas = [
+            g_c - g_p + (a / self.counter)
+            for g_c, g_p, a in zip(self.grads_curr,
+                                   self.grads_prev,
+                                   self.grads_accumulate)
+        ]
+
+        self.updates = lasagne.updates.sgd(self.deltas,
+                                           self.params_curr,
+                                           learning_rate=self.lr)
+
+
+        self.reset_and_copy = theano.function(
+            inputs=[], updates=(copy_to_prev_update +
+                                reset_grads_update +
+                                reset_count_update)
+        )
+
+        self.accumulate_gradients_func = theano.function(
+            inputs=[self.inpv, self.ep, self.w],
+            updates=acc_grads_update + count_update
+        )
+        print '\tgetting train func'
+        self.train_func = theano.function(
+            inputs=[self.inpv, self.ep, self.w, self.lr],
+            outputs=self.loss_curr.mean(),
+            updates=self.updates
+        )
+
+
+    def train(self,input,n_mc,n_iw,w,lr=lr_default):
+        n = input.shape[0]
+        ep = np.random.randn(n,n_mc,n_iw,ds[0]).astype(floatX)
+        return self.train_func(input, ep, w, lr)
+
+    def accumulate_gradients(self, input, n_mc, n_iw, w):
+        n = input.shape[0]
+        ep = np.random.randn(n, n_mc, n_iw, ds[0]).astype(floatX)
+        return self.accumulate_gradients_func(input, ep, w)
+
+
+def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1,w=lambda t:1.):
+
+    print '\n\ntraining with epochs:{}, batchsize:{}'.format(epochs,bs)
+
+    def data_generator():
+        for i in range(50000/bs):
+            yield train_x[i*bs:(i+1)*bs].reshape(bs,28*28)
+
+    t = 0
+    records = list()
+    for e in range(epochs):
+        model.reset_and_copy()
+
+        for x in data_generator():
+            model.accumulate_gradients(x, n_mc, n_iw, w(t))
+        i = 0
+        for x in data_generator():
+            loss = model.train(x, n_mc, n_iw, w(t))
+            records.append(loss)
+            if t%50 == 0:
+                print t,e,i, loss
+            t+=1
+
+            if t==10:
+                break
+            i += 1
+
+    return records
+
+if __name__ == '__main__':
+    import matplotlib as mpl
+    mpl.use('Agg')
+    import matplotlib.pyplot as plt
+    path = r'/data/lisa/data/mnist/mnist.pkl.gz'
+    train_x, train_y, valid_x, valid_y, test_x, test_y = load_mnist(path)
+
+    tests = [
+        [10,20,1,1],
+        [10*50,50*20,1,1],
+        [10,20,50,1],
+        [10,20,1,50]
+    ]
+    toplots = list()
+    for test in tests:
+        print '\n\nn_epochs:{}, batchsize:{}, n_mc:{}, n_iw:{}'.format(*test)
+        model = VAE()
+        records = train_model(model,*test)
+        toplots.append(records)
+
+    fig = plt.figure(figsize=(8,8))
+    for i in range(len(tests)):
+        ax = fig.add_subplot(2,2,i+1)
+        ax.plot(toplots[i])
+        plt.title(tests[i])
+        plt.ylim((80,250))
+    plt.savefig('vae_iwae_example.jpg',format='jpeg')
+    plt.savefig('vae_iwae_example.tiff',format='tiff')
+
+
