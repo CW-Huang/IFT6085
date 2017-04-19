@@ -9,7 +9,7 @@ import theano
 import theano.tensor as T
 import numpy as np
 
-from utils import log_mean_exp
+from utils import log_mean_exp, log_stdnormal , log_normal
 from vae import *
 
 
@@ -32,12 +32,15 @@ def build_graph(inpv, ep, w):
     log_px_z = - bc(rec, inpv.dimshuffle(0,'x','x',1))
 
     # KL divergence
-    log_pz   = - 0.5 * (mu**2 + var)
-    log_qz_x = - 0.5 * (1 + log_v)
+    log_pz   = log_stdnormal(z)
+    log_qz_x = log_normal(z,mu,log_v)
     kls_d = log_qz_x - log_pz
 
     losses_iw = - log_px_z.sum(3) + w * kls_d.sum(3)
     losses_mc = - log_mean_exp(-losses_iw,axis=2)
+    
+        
+        
     loss = T.mean(losses_mc)
 
     params = (get_all_params(enc_m) +

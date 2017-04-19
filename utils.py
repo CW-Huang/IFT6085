@@ -6,7 +6,9 @@ Created on Fri Mar 31 21:39:54 2017
 """
 
 import theano.tensor as T
+import numpy as np
 
+c = - 0.5 * np.log(2*np.pi)
 
 def log_sum_exp(A, axis=None, sum_op=T.sum):
 
@@ -21,3 +23,11 @@ def log_sum_exp(A, axis=None, sum_op=T.sum):
 
 def log_mean_exp(A, axis=None):
     return log_sum_exp(A, axis, sum_op=T.mean)
+    
+    
+def log_stdnormal(x):
+    return c - 0.5 * x**2 
+
+def log_normal(x,mean,log_var,eps=0.0):
+    return c - log_var/2 - (x - mean)**2 / (2 * T.exp(log_var) + eps)
+    

@@ -20,7 +20,7 @@ import theano
 import theano.tensor as T
 import numpy as np
 
-from utils import log_mean_exp
+from utils import log_mean_exp, log_stdnormal , log_normal
 
 floatX = theano.config.floatX
 nonl = lasagne.nonlinearities.tanh
@@ -124,8 +124,8 @@ class VAE(object):
         # lazy modeling just using binary crossentropy (non-binarized) ...
         self.log_px_z = - bc(self.rec,
                              self.inpv.dimshuffle(0,'x','x',1))
-        self.log_pz   = - 0.5 * (self.mu**2 + self.var)
-        self.log_qz_x = - 0.5 * (1+self.log_v)
+        self.log_pz   = log_stdnormal(self.z)
+        self.log_qz_x = log_normal(self.z,self.mu,self.log_v)
         
         self.kls_d = self.log_qz_x - self.log_pz
         
