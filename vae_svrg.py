@@ -13,6 +13,10 @@ from utils import log_mean_exp, log_stdnormal , log_normal
 from vae import *
 
 
+
+clip_grad = 1
+max_norm = 5
+
 def build_graph(inpv, ep, w):
     n, n_mc, n_iw, _ = ep.shape
     enc_m = get_encoder()
@@ -122,6 +126,15 @@ class VAE(object):
         self.loss_prev, self.params_prev = build_graph(self.inpv, self.ep, self.w)
         self.grads_prev = T.grad(self.loss_prev, self.params_prev)
 
+        # clipping
+        self.grads_curr = lasagne.updates.total_norm_constraint(self.grads_curr,
+                                                            max_norm=max_norm)
+        self.grads_curr = [T.clip(g, -clip_grad, clip_grad) for g in self.grads_curr]
+
+        self.grads_prev = lasagne.updates.total_norm_constraint(self.grads_prev,
+                                                            max_norm=max_norm)
+        self.grads_prev = [T.clip(g, -clip_grad, clip_grad) for g in self.grads_prev]
+
         self.grads_accumulate = [
             theano.shared(np.zeros(p.get_value().shape).astype(np.float32))
             for p in self.params_curr
@@ -155,7 +168,7 @@ class VAE(object):
         # var ** 2
         # We assume that the minibatch size is one.
         acc_grads2_update = {c: c for c in self.grads2_accumulate}
-        for ex in [self.grads_curr]:
+        for ex in [self.params_prev]:
             for cummul, grad in zip(self.grads2_accumulate, ex):
                 acc_grads2_update[cummul] = acc_grads2_update[cummul] + grad ** 2
 
@@ -192,10 +205,6 @@ class VAE(object):
             updates=acc_grads_update + count_update
         )
         
-        self.get_grads = theano.function(
-            [self.inpv, self.ep, self.w],
-            self.grads_curr)
-        
         print '\tgetting train func'
         self.train_func = theano.function(
             inputs=[self.inpv, self.ep, self.w, self.lr],
@@ -206,6 +215,7 @@ class VAE(object):
     def train(self,input,n_mc,n_iw,w,lr=lr_default):
         n = input.shape[0]
         ep = np.random.randn(n,n_mc,n_iw,ds[0]).astype(floatX)
+        #print lr
         return self.train_func(input, ep, w, lr)
 
     def accumulate_gradients(self, input, n_mc, n_iw, w):
@@ -217,25 +227,6 @@ class VAE(object):
         n = input.shape[0]
         ep = np.random.randn(n, n_mc, n_iw, ds[0]).astype(floatX)
         return self.accumulate_grads2_func(input, ep, w)
-                   
-    def get_all_grads(self, input, n_mc, n_iw, w):
-        n = input.shape[0]
-        ep = np.random.randn(n, n_mc, n_iw, ds[0]).astype(floatX)
-                   
-        grads = []
-        for i, ex in enumerate(input):
-            grad =  self.get_grads(ex.reshape(1, ex.shape[0]), 
-                                   ep[i].reshape((1,)+ ep.shape[1:]), w)
-            grads.append(grad)
-                   
-        return grads
-
-    def get_var_batch(self, input, n_mc, n_iw, w):
-
-        n = input.shape[0]
-        ep = np.random.randn(n, n_mc, n_iw, ds[0]).astype(floatX)
-
-        return self.batch_grads(input, ep, w)
 
     def get_data_var(self, n):
 
@@ -244,13 +235,14 @@ class VAE(object):
 
 
         vars = []
+
         for m1, m2 in zip(params_accumulate_1, params_accumulate_2):
 
             p_var = m2 - np.power(m1, 2)
             vars.append(p_var/n)
 
-
-        return vars
+        # wE Only care about the last W.
+        return [vars[-2]]
 
 
 def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1,w=lambda t:1.):
@@ -281,7 +273,7 @@ def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1,w=lambda t:1.):
             
         i = 0
         for x in data_generator():
-            loss = model.train(x, n_mc, n_iw, w(t))
+            loss = model.train(x, n_mc, n_iw, w(t), lr=0.01)
             records.append(loss)
             if t % 50 == 0:
                 print "t: {}, e: {}, i: {}, loss: {}".format(t, e, i, loss)
