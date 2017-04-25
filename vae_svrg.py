@@ -40,7 +40,6 @@ def build_graph(inpv, ep, w):
     losses_mc = - log_mean_exp(-losses_iw,axis=2)
     
         
-        
     loss = T.mean(losses_mc)
 
     params = (get_all_params(enc_m) +
@@ -49,6 +48,29 @@ def build_graph(inpv, ep, w):
 
     return loss, params
 
+
+#def compute_multiple_grad(losses, params):
+#    
+#    
+#    def foo(i, W1, b2, W3, b4, W5, b6, W7, b8, W9, 
+#            b10, W11, b12, W13, b14, W15, b16, W17, b18,
+#            pW1, pb2, pW3, pb4, pW5, pb6, pW7, pb8, pW9,
+#            pb10, pW11, pb12, pW13, pb14, pW15, pb16, pW17, pb18,
+#           losses):
+#        
+#        params = [pW1, pb2, pW3, pb4, pW5, pb6, pW7, pb8, pW9,
+#            pb10, pW11, pb12, pW13, pb14, pW15, pb16, pW17, pb18,]
+#        
+#        
+#        grads = T.grad(losses[i].mean(), params)
+#        return grads
+#    
+#    grads = theano.scan(fn=foo, sequences=theano.tensor.arange(losses.shape[0]),
+#                              outputs_info=[T.zeros_like(p) for p in params],
+#                              non_sequences=params + [losses], 
+#                       n_steps=losses.shape[0])
+#    
+#    return grads
 
 
 class VAE(object):
@@ -63,6 +85,7 @@ class VAE(object):
         batch_size = T.cast(self.inpv.shape[0], 'float32')
 
         self.loss_curr, self.params_curr = build_graph(self.inpv, self.ep, self.w)
+        
         self.grads_curr = T.grad(self.loss_curr, self.params_curr)
 
         self.loss_prev, self.params_prev = build_graph(self.inpv, self.ep, self.w)
@@ -115,10 +138,15 @@ class VAE(object):
             inputs=[self.inpv, self.ep, self.w],
             updates=acc_grads_update + count_update
         )
+        
+        self.get_grads = theano.function(
+            [self.inpv, self.ep, self.w],
+            self.grads_curr)
+        
         print '\tgetting train func'
         self.train_func = theano.function(
             inputs=[self.inpv, self.ep, self.w, self.lr],
-            outputs=self.loss_curr.mean(),
+            outputs=self.loss_curr,
             updates=self.updates
         )
 
@@ -132,6 +160,18 @@ class VAE(object):
         n = input.shape[0]
         ep = np.random.randn(n, n_mc, n_iw, ds[0]).astype(floatX)
         return self.accumulate_gradients_func(input, ep, w)
+                   
+    def get_all_grads(self, input, n_mc, n_iw, w):
+        n = input.shape[0]
+        ep = np.random.randn(n, n_mc, n_iw, ds[0]).astype(floatX)
+                   
+        grads = []
+        for i, ex in enumerate(input):
+            grad =  self.get_grads(ex.reshape(1, ex.shape[0]), 
+                                   ep[i].reshape((1,)+ ep.shape[1:]), w)
+            grads.append(grad)
+                   
+        return grads
 
 
 def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1,w=lambda t:1.):
@@ -144,17 +184,25 @@ def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1,w=lambda t:1.):
 
     t = 0
     records = list()
+    all_grads = []        
+            
     for e in range(epochs):
         model.reset_and_copy()
 
         for x in data_generator():
             model.accumulate_gradients(x, n_mc, n_iw, w(t))
+           
+            
         i = 0
         for x in data_generator():
             loss = model.train(x, n_mc, n_iw, w(t))
             records.append(loss)
             if t%50 == 0:
-                print t,e,i, loss
+                print "t: {}, e: {}, i: {}, loss: {}".format(t, e, i, loss)
+                
+                grads = model.get_all_grads(x, n_mc, n_iw, w(t))
+                #print [np.absolute(g).mean() for g in grads]
+                #all_grads.append(grads)
             t+=1
 
             if t==10:
@@ -172,7 +220,7 @@ if __name__ == '__main__':
 
     tests = [
         [10,20,1,1],
-        [10*50,50*20,1,1],
+        #[10*50,50*20,1,1],
         [10,20,50,1],
         [10,20,1,50]
     ]
