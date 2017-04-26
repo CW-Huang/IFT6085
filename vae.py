@@ -144,17 +144,17 @@ class VAE(object):
 
         # -- begin --
         # hacky hack for getting instance gradients in a batch
-        batch_size = T.cast(self.inpv.shape[0], 'float32')
-        for g in self.grads:
-            if len(g.owner.inputs) == 2:
-                layer_input = g.owner.inputs[0].dimshuffle(1, 0, 'x')
-                delta_output = g.owner.inputs[1].dimshuffle(0, 'x', 1)
-                instance_g = batch_size * layer_input * delta_output
-            elif len(g.owner.inputs) == 1:
-                instance_g = batch_size * (
-                    g.owner.inputs[0].owner.inputs[0].owner.inputs[0].owner.inputs[0].owner)
-            else:
-                print g.owner
+        # batch_size = T.cast(self.inpv.shape[0], 'float32')
+        # for g in self.grads:
+        #     if len(g.owner.inputs) == 2:
+        #         layer_input = g.owner.inputs[0].dimshuffle(1, 0, 'x')
+        #         delta_output = g.owner.inputs[1].dimshuffle(0, 'x', 1)
+        #         instance_g = batch_size * layer_input * delta_output
+        #     elif len(g.owner.inputs) == 1:
+        #         instance_g = batch_size * (
+        #             g.owner.inputs[0].owner.inputs[0].owner.inputs[0].owner.inputs[0].owner)
+        #     else:
+        #         print g.owner
         # Theano is our _____
         # -- end --
 
@@ -182,13 +182,88 @@ class VAE(object):
         #self.get_mu = theano.function([self.inpv],self.mu)
         #self.get_var = theano.function([self.inpv],self.var)
 
+        # var stuff
+        batch_size = T.cast(self.inpv.shape[0], 'float32')
+        self.grads_accumulate = [
+            theano.shared(np.zeros(p.get_value().shape).astype(np.float32))
+            for p in self.params
+        ]
+
+        # for the variance
+        self.grads2_accumulate = [
+            theano.shared(np.zeros(p.get_value().shape).astype(np.float32))
+            for p in self.params
+            ]
+
+        # for the mean
+        acc_grads_update = [
+            (a, a + batch_size * g)
+            for a, g in zip(self.grads_accumulate, self.cgrads)
+        ]
+
+        # var ** 2
+        # We assume that the minibatch size is one.
+        acc_grads2_update = {c: c for c in self.grads2_accumulate}
+        for ex in [self.cgrads]:
+            for cummul, grad in zip(self.grads2_accumulate, ex):
+                acc_grads2_update[cummul] = acc_grads2_update[cummul] + grad ** 2
+
+        reset_grads2_update = [
+            (a, a * np.float32(0.))
+            for a in self.grads2_accumulate
+            ]
+
+        reset_grads_update = [
+            (a, a * np.float32(0.))
+            for a in self.grads_accumulate
+        ]
+
+        self.accumulate_grads2_func = theano.function(
+            inputs=[self.inpv, self.n_mc, self.n_iw, self.ep, self.w],
+            updates=acc_grads2_update
+        )
+
+        self.accumulate_gradients_func = theano.function(
+            inputs=[self.inpv, self.n_mc, self.n_iw, self.ep, self.w],
+            updates=acc_grads_update
+        )
+
+        self.reset = theano.function(
+        inputs=[], updates=( reset_grads_update +
+        reset_grads2_update)
+        )
+
+
 
     def train(self,input,n_mc,n_iw,w,lr=lr_default):
         n = input.shape[0]
         ep = np.random.randn(n,n_mc,n_iw,ds[0]).astype(floatX)
         return self.train_func(input,ep,w,n_mc,n_iw,lr)
 
+    def accumulate_gradients(self, input, n_mc, n_iw, w):
+        n = input.shape[0]
+        ep = np.random.randn(n, n_mc, n_iw, ds[0]).astype(floatX)
+        return self.accumulate_gradients_func(input, n_mc, n_iw, ep, w)
 
+    def accumulate_grads2(self, input, n_mc, n_iw, w):
+        n = input.shape[0]
+        ep = np.random.randn(n, n_mc, n_iw, ds[0]).astype(floatX)
+        return self.accumulate_grads2_func(input, n_mc, n_iw, ep, w)
+
+    def get_data_var(self, n):
+
+        params_accumulate_1 = [p.get_value() for p in self.grads_accumulate]
+        params_accumulate_2 = [p.get_value() for p in self.grads2_accumulate]
+
+
+        vars = []
+        for m1, m2 in zip(params_accumulate_1, params_accumulate_2):
+
+            p_var = m2 - np.power(m1, 2)
+            vars.append(p_var/n)
+
+
+        return [vars[-2]]
 
 def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1,w=lambda t:1.):
 
@@ -197,8 +272,28 @@ def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1,w=lambda t:1.):
     t = 0
     records = list()
     for e in range(epochs):
+
+
+        # For the variance:
+
+        model.reset()
         for i in range(50000/bs):
             x = train_x[i*bs:(i+1)*bs].reshape(bs,28*28)
+            model.accumulate_gradients(x, n_mc, n_iw, w(t))
+
+        for i in range(50000/bs):
+            x = train_x[i:(i+1)].reshape(1,28*28)
+            model.accumulate_grads2(x, n_mc, n_iw, w(t))
+
+        print "The average variance norm is:"
+        vars = model.get_data_var(train_x.shape[0])
+        vars_norm = [np.linalg.norm(g) for g in vars]
+        print np.mean(vars_norm)
+
+
+        for i in range(50000/bs):
+            x = train_x[i*bs:(i+1)*bs].reshape(bs,28*28)
+
             loss = model.train(x,n_mc,n_iw,w(t))
             records.append(loss)
 
@@ -241,7 +336,7 @@ if __name__ == '__main__':
     import matplotlib.pyplot as plt
 
     path = r'/data/lisa/data/mnist/mnist.pkl.gz'
-#    train_x, train_y, valid_x, valid_y, test_x, test_y = load_mnist(path)
+    train_x, train_y, valid_x, valid_y, test_x, test_y = load_mnist(path)
 
 
 #==============================================================================
