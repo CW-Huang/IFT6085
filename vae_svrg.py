@@ -146,6 +146,8 @@ class VAE(object):
             for p in self.params_curr
             ]
 
+
+
         self.counter = theano.shared(np.float32(0.))
         copy_to_prev_update = zip(self.params_prev, self.params_curr)
 
@@ -177,10 +179,8 @@ class VAE(object):
             for a in self.grads2_accumulate
             ]
 
-        self.accumulate_grads2_func = theano.function(
-            inputs=[self.inpv, self.ep, self.w],
-            updates=acc_grads_update
-        )
+
+
 
         self.deltas = [
             g_c - g_p + (a / self.counter)
@@ -204,6 +204,12 @@ class VAE(object):
             inputs=[self.inpv, self.ep, self.w],
             updates=acc_grads_update + count_update
         )
+
+        self.accumulate_grads2_func = theano.function(
+            inputs=[self.inpv, self.ep, self.w],
+            updates=acc_grads_update
+        )
+
         
         print '\tgetting train func'
         self.train_func = theano.function(
@@ -211,6 +217,8 @@ class VAE(object):
             outputs=self.loss_curr,
             updates=self.updates
         )
+
+        self.cov_stuff()
 
     def train(self,input,n_mc,n_iw,w,lr=lr_default):
         n = input.shape[0]
@@ -228,6 +236,72 @@ class VAE(object):
         ep = np.random.randn(n, n_mc, n_iw, ds[0]).astype(floatX)
         return self.accumulate_grads2_func(input, ep, w)
 
+    def cov_stuff(self):
+
+        # For the covariance
+        self.cov_accumulate = [
+            theano.shared(np.zeros(p.get_value().shape).astype(np.float32))
+            for p in self.params_curr
+            ]
+
+        self.covx_accumulate = [
+            theano.shared(np.zeros(p.get_value().shape).astype(np.float32))
+            for p in self.params_curr
+            ]
+
+        self.covy_accumulate = [
+            theano.shared(np.zeros(p.get_value().shape).astype(np.float32))
+            for p in self.params_curr
+            ]
+
+        self.counter_conv = theano.shared(np.float32(0.))
+
+        # covariance stuff
+        # We assume that the minibatch size is one.
+        acc_cov_update = {c: c for c in self.cov_accumulate}
+        for x, y in zip([self.params_curr], [self.params_prev]):
+            for cummul, grad_x, grad_y in zip(self.cov_accumulate, x, y):
+                acc_cov_update[cummul] = acc_cov_update[cummul] + grad_x * grad_y
+
+        acc_covx_update = {c: c for c in self.covx_accumulate}
+        for x in [self.params_curr]:
+            for cummul, grad_x in zip(self.covx_accumulate, x):
+                acc_covx_update[cummul] = acc_covx_update[cummul] + grad_x
+
+        acc_covy_update = {c: c for c in self.covy_accumulate}
+        for y in [self.grads_prev]:
+            for cummul, grad_y in zip(self.covy_accumulate, y):
+                acc_covy_update[cummul] = acc_covy_update[cummul] + grad_y
+
+        reset_cov_update = [
+            (a, a * np.float32(0.))
+            for a in self.cov_accumulate + self.covx_accumulate + self.covy_accumulate
+            ]
+
+        self.cov = [
+            (c_xy - c_x*c_y)/ self.counter
+            for c_xy, c_x, c_y in zip(self.cov_accumulate,
+                                   self.covx_accumulate,
+                                   self.covy_accumulate)
+            ]
+
+        self.accumulate_cov_func = theano.function(
+            inputs=[self.inpv, self.ep, self.w],
+            updates=acc_cov_update.update(acc_covx_update ).update(acc_covy_update)
+        )
+
+        #self.reset_cov = theano.function(
+        #    inputs=[], updates=(reset_cov_update)
+        #)
+
+        self.get_cov_func = theano.function(
+            inputs=[self.inpv, self.ep, self.w], outputs=self.cov,
+            updates= reset_cov_update
+        )
+
+
+
+
     def get_data_var(self, n):
 
         params_accumulate_1 = [p.get_value() for p in self.grads_accumulate]
@@ -242,7 +316,17 @@ class VAE(object):
             vars.append(p_var/n)
 
         # wE Only care about the last W.
-        return [vars[-2]]
+        return vars
+
+    def accumulate_batch_cov(self, input, n_mc, n_iw, w):
+        n = input.shape[0]
+        ep = np.random.randn(n, n_mc, n_iw, ds[0]).astype(floatX)
+        return self.accumulate_cov_func(input, ep, w)
+
+    def get_cov(self, input, n_mc, n_iw, w):
+        n = input.shape[0]
+        ep = np.random.randn(n, n_mc, n_iw, ds[0]).astype(floatX)
+        return self.get_cov_func(input, ep, w)
 
 
 def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1,w=lambda t:1.):
@@ -267,12 +351,23 @@ def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1,w=lambda t:1.):
 
         print "The average variance norm is:"
         vars = model.get_data_var(train_x.shape[0])
-        vars_norm = [np.linalg.norm(g) for g in vars]
+        vars_norm = np.linalg.norm(vars[-2])
         print np.mean(vars_norm)
 
             
         i = 0
         for x in data_generator():
+
+
+            #Get the alpha
+            for ex in x:
+                model.accumulate_batch_cov(ex.reshape(1, ex.shape[0]), n_mc, n_iw, w(t), lr=0.01)
+
+            covs = model.get_cov(x, n_mc, n_iw, w(t), lr=0.01)
+            alphas = [cov/var for cov, var in zip(covs, vars)]
+            print np.linalg.norm(alphas[-2])
+
+
             loss = model.train(x, n_mc, n_iw, w(t), lr=0.01)
             records.append(loss)
             if t % 50 == 0:
