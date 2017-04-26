@@ -110,7 +110,7 @@ def get_batch_gradient(grads):
 
 class VAE(object):
 
-    def __init__(self):
+    def __init__(self, use_alpha=False):
 
         self.inpv = T.matrix('inpv')
         self.ep = T.tensor4('ep')
@@ -179,15 +179,27 @@ class VAE(object):
             for a in self.grads2_accumulate
             ]
 
+        self.cov_stuff()
 
-
-
-        self.deltas = [
-            g_c - g_p + (a / self.counter)
-            for g_c, g_p, a in zip(self.grads_curr,
-                                   self.grads_prev,
-                                   self.grads_accumulate)
+        self.all_var = [
+            (m2 - T.power(m1, 2))/self.counter for m1, m2 in zip(self.grads_accumulate, self.grads2_accumulate)
         ]
+
+        if not use_alpha:
+            self.deltas = [
+                g_c - g_p + (a / self.counter)
+                for g_c, g_p, a in zip(self.grads_curr,
+                                       self.grads_prev,
+                                       self.grads_accumulate)
+            ]
+        else:
+            self.deltas = [
+                g_c - (mini_cov/(all_var + 1e-6)).clip(-10, 10)*(g_p - (a / self.counter))
+                for g_c, g_p, a, mini_cov, all_var in zip(self.grads_curr,
+                                       self.grads_prev,
+                                       self.grads_accumulate,
+                                       self.cov,
+                                       self.all_var)]
 
         self.updates = lasagne.updates.sgd(self.deltas,
                                            self.params_curr,
@@ -218,7 +230,7 @@ class VAE(object):
             updates=self.updates
         )
 
-        self.cov_stuff()
+
 
     def train(self,input,n_mc,n_iw,w,lr=lr_default):
         n = input.shape[0]
@@ -261,7 +273,7 @@ class VAE(object):
         acc_cov_update = {c: c for c in self.cov_accumulate}
         for x, y in zip([self.params_curr], [self.params_prev]):
             for cummul, grad_x, grad_y in zip(self.cov_accumulate, x, y):
-                acc_cov_update[cummul] = acc_cov_update[cummul] + grad_x * grad_y
+                acc_cov_update[cummul] = acc_cov_update[cummul] + grad_x*grad_y
 
         acc_covx_update = {c: c for c in self.covx_accumulate}
         for x in [self.params_curr]:
@@ -273,30 +285,40 @@ class VAE(object):
             for cummul, grad_y in zip(self.covy_accumulate, y):
                 acc_covy_update[cummul] = acc_covy_update[cummul] + grad_y
 
+        count_update = {self.counter_conv: self.counter_conv + 1}
+        reset_count_update = [(self.counter_conv, np.float32(0.))]
+
         reset_cov_update = [
             (a, a * np.float32(0.))
             for a in self.cov_accumulate + self.covx_accumulate + self.covy_accumulate
             ]
 
+        div = (self.counter_conv - 1)
         self.cov = [
-            (c_xy - c_x*c_y)/ self.counter
+            (c_xy/div - (c_x/div)*(c_y/div))
             for c_xy, c_x, c_y in zip(self.cov_accumulate,
                                    self.covx_accumulate,
                                    self.covy_accumulate)
             ]
 
+        updates = {}
+        updates.update(acc_cov_update)
+        updates.update(acc_covx_update)
+        updates.update(acc_covy_update)
+        updates.update(count_update)
+
         self.accumulate_cov_func = theano.function(
             inputs=[self.inpv, self.ep, self.w],
-            updates=acc_cov_update.update(acc_covx_update ).update(acc_covy_update)
+            updates=updates
         )
 
-        #self.reset_cov = theano.function(
-        #    inputs=[], updates=(reset_cov_update)
-        #)
+        self.reset_cov = theano.function(
+            inputs=[], updates=reset_cov_update + reset_count_update
+        )
 
         self.get_cov_func = theano.function(
-            inputs=[self.inpv, self.ep, self.w], outputs=self.cov,
-            updates= reset_cov_update
+            inputs=[], outputs=self.cov,
+            updates= reset_cov_update + reset_count_update
         )
 
 
@@ -326,7 +348,7 @@ class VAE(object):
     def get_cov(self, input, n_mc, n_iw, w):
         n = input.shape[0]
         ep = np.random.randn(n, n_mc, n_iw, ds[0]).astype(floatX)
-        return self.get_cov_func(input, ep, w)
+        return self.get_cov_func()#(input, ep, w)
 
 
 def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1,w=lambda t:1.):
@@ -358,15 +380,14 @@ def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1,w=lambda t:1.):
         i = 0
         for x in data_generator():
 
-
+            model.reset_cov()
             #Get the alpha
             for ex in x:
-                model.accumulate_batch_cov(ex.reshape(1, ex.shape[0]), n_mc, n_iw, w(t), lr=0.01)
+                model.accumulate_batch_cov(ex.reshape(1, ex.shape[0]), n_mc, n_iw, w(t))
 
-            covs = model.get_cov(x, n_mc, n_iw, w(t), lr=0.01)
+            covs = model.get_cov(x, n_mc, n_iw, w(t))
             alphas = [cov/var for cov, var in zip(covs, vars)]
-            print np.linalg.norm(alphas[-2])
-
+            #print np.max(alphas[-2])
 
             loss = model.train(x, n_mc, n_iw, w(t), lr=0.01)
             records.append(loss)
@@ -397,7 +418,7 @@ if __name__ == '__main__':
     toplots = list()
     for test in tests:
         print '\n\nn_epochs:{}, batchsize:{}, n_mc:{}, n_iw:{}'.format(*test)
-        model = VAE()
+        model = VAE(use_alpha=True)
         records = train_model(model,*test)
         toplots.append(records)
 
