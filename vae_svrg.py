@@ -487,40 +487,41 @@ def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1, cumulate_cov=False, w=lambd
     lr =0.01
     records = list()
     updates_var = []
+    variance_monitoring = []
 
 
-    for e in range(epochs):
+    for e in range(epochs):#epochs):
         model.reset_and_copy()
 
         for x in data_generator():
             model.accumulate_gradients(x, n_mc, n_iw, w(t))
 
-        model.reset_delta()
+        # model.reset_delta()
+        model.reset_grad_prev()
         for x in data_generator(1):
 
             # variance of the updates
-            model.accumulate_delta_var(x, n_mc, n_iw, w(t), lr=lr)
+            #model.accumulate_delta_var(x, n_mc, n_iw, w(t), lr=lr)
             # variance of the grads.
             model.accumulate_grad_prev_var(x, n_mc, n_iw, w(t))
-
-
-        print "The average update norm is:"
-        vars = model.get_delta_variance_func()
-        vars_norm = np.linalg.norm(vars[-2])
-        print np.mean(vars_norm)
-
-        print "The average variance norm is:"
-        #vars = model.get_data_var(train_x.shape[0])
-        vars = model.get_grad_prev_variance_func()
-        vars_norm = np.linalg.norm(vars[-2])
-        #print np.max(vars[-2])
-        updates_var.append(vars_norm)
+        #
+        #
+        # print "The average update norm is:"
+        # vars = model.get_delta_variance_func()
+        # vars_norm = np.linalg.norm(vars[-2])
+        # print np.mean(vars_norm)
+        #
+        # print "The average variance norm is:"
+        # #vars = model.get_data_var(train_x.shape[0])
+        # vars = model.get_grad_prev_variance_func()
+        # vars_norm = np.linalg.norm(vars[-2])
+        # #print np.max(vars[-2])
+        # updates_var.append(vars_norm)
 
             
         i = 0
         for x in data_generator():
 
-            #model.reset_cov()
             if cumulate_cov:
                 model.reset_all_grad()
                 #Get the alpha
@@ -528,11 +529,11 @@ def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1, cumulate_cov=False, w=lambd
                     model.accumulate_batch_cov(ex.reshape(1, ex.shape[0]), n_mc, n_iw, w(t))
 
                 #covs = model.get_cov_func()
-                covs = model.get_all_grad_variance_func[2]()
+                #covs = model.get_all_grad_variance_func[2]()
                 #vars = model.get_all_grad_variance_func[1]()
                 #vars = model.get_grad_prev_variance_func()
-                alphas = [cov/var for cov, var in zip(covs, vars)]
-                print np.mean(np.absolute(alphas[-2]))
+                #alphas = [cov/var for cov, var in zip(covs, vars)]
+                #print np.mean(np.absolute(alphas[-2]))
 
             loss = model.train(x, n_mc, n_iw, w(t), lr=lr)
             records.append(loss)
@@ -545,7 +546,27 @@ def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1, cumulate_cov=False, w=lambd
                 break
             i += 1
 
-    return records, updates_var
+
+            if t % 300 == 0:
+                model.reset_delta()
+                for x in data_generator(1):
+                    # variance of the updates
+                    model.accumulate_delta_var(x, n_mc, n_iw, w(t), lr=lr)
+                    # variance of the grads.
+                    model.accumulate_grad_prev_var(x, n_mc, n_iw, w(t))
+
+                print "The average update norm is:"
+                vars = model.get_delta_variance_func()
+                vars_norm = [np.linalg.norm(p_v) for p_v in vars]
+                print vars_norm#[ np.mean(p_v) for p_v in vars_norm]
+                variance_monitoring.append(vars_norm)
+
+            #if t==100:
+            #    print "quitting"
+            #    break
+
+
+    return records, variance_monitoring
 
 if __name__ == '__main__':
     import matplotlib as mpl
@@ -555,7 +576,8 @@ if __name__ == '__main__':
     train_x, train_y, valid_x, valid_y, test_x, test_y = load_mnist(path)
 
     tests = [
-        [10,20,1,1, False],
+        #[10,20,1,1, False],
+        [10, 20, 1, 1, True],
         #[10*50,50*20,1,1, False],
         #[10,20,50,1,False],
         #[10,20,1,50, False]
@@ -579,13 +601,25 @@ if __name__ == '__main__':
     plt.savefig('vae_iwae_example.jpg',format='jpeg')
     plt.savefig('vae_iwae_example.tiff',format='tiff')
 
-    fig = plt.figure(figsize=(8,8))
-    for i in range(len(tests)):
-        ax = fig.add_subplot(2,2,i+1)
-        ax.plot(all_updates_var[i])
-        plt.title(tests[i])
-        #plt.ylim((80,250))
-    plt.savefig('vae_svrg_var.jpg',format='jpeg')
-    plt.savefig('vae_svrg_var.tiff',format='tiff')
+    #print all_updates_var
+    with open("svrgre_variance_10.pkl", 'w') as f:
+        pickle.dump(all_updates_var, f)
+
+    with open("svrgre_loss_10.pkl", 'w') as f:
+            pickle.dump(toplots, f)
+
+
+
+    # fig = plt.figure(figsize=(8,8))
+    # for i in range(len(tests)):
+    #     ax = fig.add_subplot(2,2,i+1)
+    #
+    #     var_i_want = [v[-2] for v in all_updates_var[i]]
+    #
+    #     ax.plot(var_i_want)
+    #     plt.title(tests[i])
+    #     #plt.ylim((80,250))
+    # plt.savefig('vae_svrg_var.jpg',format='jpeg')
+    # plt.savefig('vae_svrg_var.tiff',format='tiff')
 
 
