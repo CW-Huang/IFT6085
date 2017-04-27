@@ -516,7 +516,7 @@ def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1, cumulate_cov=False, w=lambd
         #print np.max(vars[-2])
         updates_var.append(vars_norm)
 
-            
+
         i = 0
         for x in data_generator():
 

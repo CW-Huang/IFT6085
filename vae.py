@@ -93,7 +93,7 @@ def load_mnist(path):
 
 class VAE(object):
 
-    def __init__(self):
+    def __init__(self, update="sgd"):
 
         self.inpv = T.matrix('inpv')
         self.ep = T.tensor4('ep')
@@ -146,12 +146,23 @@ class VAE(object):
                                                             max_norm=max_norm)
         self.cgrads = [T.clip(g, -clip_grad, clip_grad) for g in self.mgrads]
 
-        self.updates = lasagne.updates.adam(self.cgrads,
-                                            self.params,
-                                            beta1=0.9,
-                                            beta2=0.999,
-                                            epsilon=1e-4,
-                                            learning_rate=self.lr)
+        self.update = update
+        if update == "adam":
+            self.updates = lasagne.updates.adam(self.cgrads,
+                                                self.params,
+                                                beta1=0.9,
+                                                beta2=0.999,
+                                                epsilon=1e-4,
+                                                learning_rate=self.lr)
+        elif update == "sgd":
+            self.updates = lasagne.updates.sgd(self.cgrads,
+                                               self.params,
+                                               learning_rate=self.lr)
+        elif update == "momentum":
+            self.updates = lasagne.updates.momentum(self.cgrads,
+                                                    self.params,
+                                                    learning_rate=self.lr)
+
 
         print '\tgetting train func'
         self.train_func = theano.function([self.inpv,self.ep,self.w,
@@ -304,15 +315,16 @@ class VAE(object):
         #Getting our update direction
         vars = [self.updates[p] - p for p in self.params]
 
-        all_cumulate, counter, accumulate_all_ms_func, reset_all, get_variable_variance_func, all_cov = self.tract_covariance(vars, None,
-                                                                                                                                   shapes, 1,
-                                                                                                                              [
-                                                                                                                                  self.inpv,
-                                                                                                                                  self.ep,
-                                                                                                                                  self.w,
-                                                                                                                                  self.n_mc,
-                                                                                                                                  self.n_iw,
-                                                                                                                                  self.lr])
+        all_cumulate, counter, accumulate_all_ms_func,\
+            reset_all, get_variable_variance_func, all_cov = self.tract_covariance(
+                    vars, None,
+                    shapes, 1,
+                    [self.inpv,
+                     self.ep,
+                     self.w,
+                     self.n_mc,
+                     self.n_iw,
+                     self.lr])
 
         self.all_cumulate = all_cumulate
         self.counter_delta = counter
@@ -353,22 +365,10 @@ class VAE(object):
 
         return [vars[-2]]
 
-def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1,w=lambda t:1.):
-
-    print '\n\ntraining with epochs:{}, batchsize:{}'.format(epochs,bs)
-
+def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1,w=lambda t:1.,):
     t = 0
     records = list()
     for e in range(epochs):
-
-
-        # For the variance:
-
-        #model.reset()
-        #for i in range(50000/bs):
-        #    x = train_x[i*bs:(i+1)*bs].reshape(bs,28*28)
-        #    model.accumulate_gradients(x, n_mc, n_iw, w(t))
-
         model.reset_delta()
         for i in range(50000/bs):
             x = train_x[i:(i+1)].reshape(1,28*28)
@@ -377,14 +377,15 @@ def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1,w=lambda t:1.):
         print "The average update norm is:"
         vars = model.get_delta_variance_func()
         vars_norm = np.linalg.norm(vars[-2])
-        print np.mean(vars_norm)
+        records.append({"variance norm":np.mean(vars_norm)})
 
 
         for i in range(50000/bs):
             x = train_x[i*bs:(i+1)*bs].reshape(bs,28*28)
 
-            loss = model.train(x,n_mc,n_iw,w(t))
-            records.append(loss)
+            loss = model.train(x, n_mc, n_iw, w(t))
+            record = {"loss": loss}
+            records.append(record)
 
             if t%50 == 0:
                 print t,e,i, loss
@@ -423,44 +424,10 @@ if __name__ == '__main__':
     import matplotlib as mpl
     mpl.use('Agg')
     import matplotlib.pyplot as plt
+    import pickle
 
     path = r'/data/lisa/data/mnist/mnist.pkl.gz'
     train_x, train_y, valid_x, valid_y, test_x, test_y = load_mnist(path)
-
-
-#==============================================================================
-# decreasing learning rate (long)
-#==============================================================================
-#    tests = [
-#        [20,1,1],
-#        [50*20,1,1],
-#        [20,50,1],
-#        [20,1,50]
-#    ]
-#
-#    toplots = list()
-#
-#    for test in tests:
-#        print '\n\nbatchsize:{}, n_mc:{}, n_iw:{}'.format(*test)
-#        model = VAE()
-#        records = train_model(model,*test)
-#        toplots.append(records)
-#
-#
-#    fig = plt.figure(figsize=(8,8))
-#    for i in range(len(tests)):
-#        plt.plot(toplots[i])
-#
-#    plt.ylim((80,250))
-#    plt.legend(map(lambda test:'bs:{}, n_mc:{}, n_iw:{}'.format(*test),tests),
-#               loc=1)
-#    plt.savefig('vae_iwae_example.jpg',format='jpeg')
-#    plt.savefig('vae_iwae_example.tiff',format='tiff')
-
-
-#==============================================================================
-# fix learning rate
-#==============================================================================
 
     tests = [
         [10,20,1,1],
@@ -469,68 +436,15 @@ if __name__ == '__main__':
         #[10,20,1,50]
     ]
 
+    update_methods = ["adam", "sgd", "momentum"]
+
     toplots = list()
 
     for test in tests:
-        print '\n\nn_epochs:{}, batchsize:{}, n_mc:{}, n_iw:{}'.format(*test)
-        model = VAE()
-        records = train_model(model,*test)
-        toplots.append(records)
-
-
-    fig = plt.figure(figsize=(8,8))
-    for i in range(len(tests)):
-        ax = fig.add_subplot(2,2,i+1)
-        ax.plot(toplots[i])
-        plt.title(tests[i])
-        plt.ylim((80,250))
-
-    plt.savefig('vae_iwae_example.jpg',format='jpeg')
-    plt.savefig('vae_iwae_example.tiff',format='tiff')
-
-
-#==============================================================================
-# norm of variance of gradient estimate
-#==============================================================================
-#    # variance of gradient
-#     model = VAE()
-#
-#     bs = 64
-#     for i in range(50000/bs):
-#        x = train_x[i*bs:(i+1)*bs].reshape(bs,28*28)
-#        loss = model.train(x,1,1,1.)
-#
-#
-#     f_grads = theano.function([model.inpv,model.ep,model.w,
-#                               model.n_mc,model.n_iw],
-#                              model.grads)
-#     rms = lambda xx: (xx**2).mean()**0.5
-#     l2norm = lambda xx: (xx**2).sum()**0.5
-#
-#     x = train_x[0].reshape(1,28*28)
-#     n = x.shape[0]
-#
-#
-#     norm_operator = rms
-#     def get_norm_var(mc,iw):
-#        norms = list()
-#        for i in range(100):
-#            ep = np.random.randn(n,mc,iw,ds[0]).astype(floatX)
-#            norms.append(f_grads(x,ep,1.,mc,iw))
-#        return [norm_operator(xx) for xx in np.array(norms).var(0)]
-#
-#     tests = [
-#        [1,1],
-#        [1,10],
-#        [1,100],
-#        [10,1],
-#        [100,1]
-#     ]
-#
-#     for (mc,iw) in tests:
-#        plt.plot(get_norm_var(mc,iw))
-#
-#
-#     plt.legend(['mc{}iw{}'.format(mc,iw) for (mc,iw) in tests],loc=1)
-#     plt.savefig('rms_var_params.jpg',format='jpeg')
-
+        for update in update_methods:
+            print '\n\nn_epochs:{}, batchsize:{}, n_mc:{}, n_iw:{}'.format(*test)
+            model = VAE(update=update)
+            records = train_model(model,*test)
+            toplots.append(records)
+            with open("%s_update_log.pkl") as f:
+                pickle.dump(toplots, f)
