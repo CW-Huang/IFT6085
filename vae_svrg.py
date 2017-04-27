@@ -173,6 +173,7 @@ class VAE(object):
                                        self.grads_accumulate)
             ]
         else:
+            print "SVRG-RE"
             self.deltas = [
                g_c - (mini_cov/(all_var + 1e-6)).clip(-10, 10)*(g_p - (a / self.counter))
                for g_c, g_p, a, mini_cov, all_var in zip(self.grads_curr,
@@ -181,7 +182,6 @@ class VAE(object):
                                       self.all_grads_covariance[2], # the covariance between both
                                       self.grads_prev_variance)]
 
-        self.monitor_updates_variance()
 
 
 
@@ -189,6 +189,7 @@ class VAE(object):
                                            self.params_curr,
                                            learning_rate=self.lr)
 
+        self.monitor_updates_variance()
 
         self.reset_and_copy = theano.function(
             inputs=[], updates=(copy_to_prev_update +
@@ -238,7 +239,9 @@ class VAE(object):
     def monitor_updates_variance(self):
         shapes = [p.get_value().shape for p in self.params_curr]
 
-        vars = [y for x, y in self.updates]#[self.lr*g for g in self.deltas]
+
+        #Getting our update direction
+        vars = [y -p for (x, y), p in zip(self.updates.items(), self.params_curr)]#[self.lr*g for g in self.deltas]
         all_cumulate, counter, accumulate_all_ms_func, reset_all, get_variable_variance_func, all_cov = self.tract_covariance(vars, None,
                                                                                                                                    shapes, 1,
                                                                                                                                    [
@@ -492,6 +495,7 @@ def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1, cumulate_cov=False, w=lambd
         for x in data_generator():
             model.accumulate_gradients(x, n_mc, n_iw, w(t))
 
+        model.reset_delta()
         for x in data_generator(1):
 
             # variance of the updates
@@ -501,7 +505,6 @@ def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1, cumulate_cov=False, w=lambd
 
 
         print "The average update norm is:"
-        #vars = model.get_data_var(train_x.shape[0])
         vars = model.get_delta_variance_func()
         vars_norm = np.linalg.norm(vars[-2])
         print np.mean(vars_norm)
@@ -581,7 +584,7 @@ if __name__ == '__main__':
         ax = fig.add_subplot(2,2,i+1)
         ax.plot(all_updates_var[i])
         plt.title(tests[i])
-        plt.ylim((80,250))
+        #plt.ylim((80,250))
     plt.savefig('vae_svrg_var.jpg',format='jpeg')
     plt.savefig('vae_svrg_var.tiff',format='tiff')
 
