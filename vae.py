@@ -165,10 +165,11 @@ class VAE(object):
 
 
         print '\tgetting train func'
-        self.train_func = theano.function([self.inpv,self.ep,self.w,
-                                           self.n_mc,self.n_iw,self.lr],
-                                           self.loss.mean(),
-                                           updates=self.updates)
+        self.param_order = [u for u in self.updates]
+        self.train_func = theano.function(inputs=[self.inpv, self.ep, self.w,
+                                                  self.n_mc, self.n_iw, self.lr],
+                                          outputs=[self.loss.mean()] + [self.updates[u] for u in self.param_order] ,
+                                          updates=[(u, self.updates[u]) for u in self.param_order] )
 
         #print '\tgetting other useful funcs'
         #self.recon = theano.function([self.inpv,self.ep,self.n_mc,self.n_iw],
@@ -365,58 +366,35 @@ class VAE(object):
 
         return [vars[-2]]
 
-def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1,w=lambda t:1.,):
+def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1,w=lambda t:1., name='default'):
     t = 0
-    records = list()
-    for e in range(epochs):
-        model.reset_delta()
-        for i in range(50000/bs):
-            x = train_x[i:(i+1)].reshape(1,28*28)
-            model.accumulate_delta_var(x,n_mc,n_iw,w(t))
-
-        print "The average update norm is:"
-        vars = model.get_delta_variance_func()
-        vars_norm = np.linalg.norm(vars[-2])
-        records.append({"variance norm":np.mean(vars_norm)})
-
-
-        for i in range(50000/bs):
-            x = train_x[i*bs:(i+1)*bs].reshape(bs,28*28)
-
-            loss = model.train(x, n_mc, n_iw, w(t))
-            record = {"loss": loss}
-            records.append(record)
-
-            if t%50 == 0:
-                print t,e,i, loss
-            t+=1
-
-            if t==10:
-                break
-
-    return records
-
-
-def train_model2(model,bs=20,n_mc=1,n_iw=1,w=lambda t:1.):
-
-    print '\n\ntraining with bs:{}, n_mc:{}, n_iw:{}'.format(bs,n_mc,n_iw)
-
-    t = 0
-    records = list()
-    for j in range(7):
-        epochs = 3**j
-        lr = 0.001 * 10**(-j/7.)
+    import gzip
+    with gzip.open('%s_updates_log.pkl' % name, 'wb') as f:
+        pickle.dump(model.param_order, f, 2)
         for e in range(epochs):
+            model.reset_delta()
+            for i in range(50000/bs):
+                x = train_x[i:(i+1)].reshape(1,28*28)
+                model.accumulate_delta_var(x,n_mc,n_iw,w(t))
+
+            vars = model.get_delta_variance_func()
+            vars_norm = np.linalg.norm(vars[-2])
+
             for i in range(50000/bs):
                 x = train_x[i*bs:(i+1)*bs].reshape(bs,28*28)
-                loss = model.train(x,n_mc,n_iw,w(t),lr)
 
-                if t%50 == 0:
+                outputs = model.train(x, n_mc, n_iw, w(t))
+                loss = outputs[0]
+                deltas = [np.array(o) for o in  outputs[1:]]
+
+                if t % 50 == 0:
                     print t,e,i, loss
-                t+=1
-            records.append(loss)
+                    pickle.dump((loss, deltas), f, 2)
+                t += 1
 
-    return records
+                if t == 10:
+                    break
+
 
 
 if __name__ == '__main__':
@@ -424,13 +402,12 @@ if __name__ == '__main__':
     import matplotlib as mpl
     mpl.use('Agg')
     import matplotlib.pyplot as plt
-    import pickle
 
     path = r'/data/lisa/data/mnist/mnist.pkl.gz'
     train_x, train_y, valid_x, valid_y, test_x, test_y = load_mnist(path)
 
     tests = [
-        [10,20,1,1],
+        [10, 20, 1, 1],
         #[10*50,50*20,1,1],
         #[10,20,50,1],
         #[10,20,1,50]
@@ -444,7 +421,5 @@ if __name__ == '__main__':
         for update in update_methods:
             print '\n\nn_epochs:{}, batchsize:{}, n_mc:{}, n_iw:{}'.format(*test)
             model = VAE(update=update)
-            records = train_model(model,*test)
-            toplots.append(records)
-            with open("%s_update_log.pkl") as f:
-                pickle.dump(toplots, f)
+            records = train_model(model, *test, name=update)
+
