@@ -27,7 +27,7 @@ def load_mnist(path):
 update_fun = {
     "adam": lasagne.updates.adam,
     "sgd": lasagne.updates.sgd,
-    "momentum": lasagne.updates.nesterov_momentum,
+    "momentum": lasagne.updates.momentum,
 }
 
 if __name__ == "__main__":
@@ -35,6 +35,7 @@ if __name__ == "__main__":
     batch_size = 64
     epochs = 20
     lr = 0.001
+
     train_x, train_y, _, _, _, _ = load_mnist(path)
     data_x = theano.shared(train_x.astype(np.float32))
     data_y = theano.shared(train_y.astype(np.int32))
@@ -103,8 +104,8 @@ if __name__ == "__main__":
                 for i in batch_idxs:
                     logitem = {"cost": train(i)}
                     print logitem["cost"]
-                    iterations += 1
                     if iterations % 50 == 0:
                         variances = calculate_variance()
                         logitem["grad_variance"] = variances
+                    iterations += 1
                     pickle.dump(logitem, f, 2)
