@@ -33,8 +33,8 @@ update_fun = {
 if __name__ == "__main__":
     path = r'/data/lisa/data/mnist/mnist.pkl.gz'
     batch_size = 64
-    epochs = 50
-    lr = 0.0001
+    epochs = 20
+    lr = 0.001
     train_x, train_y, _, _, _, _ = load_mnist(path)
     data_x = theano.shared(train_x.astype(np.float32))
     data_y = theano.shared(train_y.astype(np.int32))
@@ -46,7 +46,8 @@ if __name__ == "__main__":
     X = T.matrix('X')
     y = T.ivector('y')
     y_hat = T.nnet.softmax(T.dot(X, W) + b)
-    cost = T.mean(T.nnet.categorical_crossentropy(y_hat, y))
+    loss = T.mean(T.nnet.categorical_crossentropy(y_hat, y))
+    cost = loss + 1e-4 * sum(T.sum(T.sqr(w)) for w in params)
     gradients = T.grad(cost, wrt=params)
 
     for update_type in update_fun:
@@ -56,7 +57,7 @@ if __name__ == "__main__":
         idx = T.iscalar('idx')
         train = theano.function(
             inputs=[idx],
-            outputs=cost,
+            outputs=loss,
             updates=updates,
             givens={
                 X: data_x[idx * batch_size:(idx + 1) * batch_size],
@@ -95,12 +96,13 @@ if __name__ == "__main__":
         batches = int(math.ceil(train_x.shape[0] / float(batch_size)))
         iterations = 0
 
-        with gzip.open("%s_method_log.pkl.gz") as f:
+        with gzip.open("%s_method_log.pkl.gz" % update_type, 'wb') as f:
             for epoch in xrange(epochs):
                 batch_idxs = range(batches)
                 random.shuffle(batch_idxs)
                 for i in batch_idxs:
                     logitem = {"cost": train(i)}
+                    print logitem["cost"]
                     iterations += 1
                     if iterations % 50 == 0:
                         variances = calculate_variance()
