@@ -27,7 +27,7 @@ def load_mnist(path):
 update_fun = {
     "adam": lasagne.updates.adam,
     "sgd": lasagne.updates.sgd,
-    "momentum": lasagne.updates.momentum,
+    "momentum": lasagne.updates.nesterov_momentum,
 }
 
 if __name__ == "__main__":
@@ -49,56 +49,60 @@ if __name__ == "__main__":
     cost = T.mean(T.nnet.categorical_crossentropy(y_hat, y))
     gradients = T.grad(cost, wrt=params)
 
-    update_type = "adam"
-    updates = update_fun[update_type](gradients, params, lr)
-    deltas = [updates[p] - p for p in params]
+    for update_type in update_fun:
+        updates = update_fun[update_type](gradients, params, lr)
+        deltas = [updates[p] - p for p in params]
 
-    idx = T.iscalar('idx')
-    train = theano.function(
-        inputs=[idx],
-        outputs=cost,
-        updates=updates,
-        givens={
-            X: data_x[idx * batch_size:(idx + 1) * batch_size],
-            y: data_y[idx * batch_size:(idx + 1) * batch_size],
-        }
-    )
+        idx = T.iscalar('idx')
+        train = theano.function(
+            inputs=[idx],
+            outputs=cost,
+            updates=updates,
+            givens={
+                X: data_x[idx * batch_size:(idx + 1) * batch_size],
+                y: data_y[idx * batch_size:(idx + 1) * batch_size],
+            }
+        )
 
-    per_instance_gradient = theano.function(
-        inputs=[idx],
-        outputs=gradients,
-        givens={
-            X: data_x[idx:(idx + 1)],
-            y: data_y[idx:(idx + 1)],
-        }
-    )
+        per_instance_gradient = theano.function(
+            inputs=[idx],
+            outputs=gradients,
+            givens={
+                X: data_x[idx:(idx + 1)],
+                y: data_y[idx:(idx + 1)],
+            }
+        )
 
-    def calculate_variance():
-        acc_grad = None
-        acc_grad_sqr = None
-        count = train_x.shape[0]
-        for i in xrange(count):
-            grads = per_instance_gradient(i)
-            grads = [np.array(g) for g in grads]
-            if acc_grad is None:
-                acc_grad = [np.zeros(g.shape).astype(np.float32)
-                            for g in grads]
-                acc_grad_sqr = [np.zeros(g.shape).astype(np.float32)
+        def calculate_variance():
+            acc_grad = None
+            acc_grad_sqr = None
+            count = train_x.shape[0]
+            for i in xrange(count):
+                grads = per_instance_gradient(i)
+                grads = [np.array(g) for g in grads]
+                if acc_grad is None:
+                    acc_grad = [np.zeros(g.shape).astype(np.float32)
                                 for g in grads]
-            for ag, ags, g in zip(acc_grad, acc_grad_sqr, grads):
-                ag += g
-                ags += g**2
-        variances = [ags / count - (ag / count)**2
-                     for ag, ags in zip(acc_grad, acc_grad_sqr)]
-        return variances
+                    acc_grad_sqr = [np.zeros(g.shape).astype(np.float32)
+                                    for g in grads]
+                for ag, ags, g in zip(acc_grad, acc_grad_sqr, grads):
+                    ag += g
+                    ags += g**2
+            variances = [ags / count - (ag / count)**2
+                         for ag, ags in zip(acc_grad, acc_grad_sqr)]
+            return variances
 
-    batches = int(math.ceil(train_x.shape[0] / float(batch_size)))
-    iterations = 0
-    for epoch in xrange(epochs):
-        batch_idxs = range(batches)
-        random.shuffle(batch_idxs)
-        for i in batch_idxs:
-            print train(i)
-            iterations += 1
-            if iterations % 100 == 0:
-                variances = calculate_variance()
+        batches = int(math.ceil(train_x.shape[0] / float(batch_size)))
+        iterations = 0
+
+        with gzip.open("%s_method_log.pkl.gz") as f:
+            for epoch in xrange(epochs):
+                batch_idxs = range(batches)
+                random.shuffle(batch_idxs)
+                for i in batch_idxs:
+                    logitem = {"cost": train(i)}
+                    iterations += 1
+                    if iterations % 50 == 0:
+                        variances = calculate_variance()
+                        logitem["grad_variance"] = variances
+                    pickle.dump(logitem, f, 2)
