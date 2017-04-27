@@ -161,13 +161,8 @@ class VAE(object):
 
 
 
-        #self.cov_stuff()
         self.monitor_all_grads_covariance()
         self.monitor_grads_prev_variance()
-
-        #self.all_var = [
-        #    (m2 - T.power(m1, 2))/self.counter for m1, m2 in zip(self.grads_accumulate, self.grads2_accumulate)
-        #]
 
         if not use_alpha:
             print "Normal SVRG"
@@ -186,8 +181,6 @@ class VAE(object):
                                       self.all_grads_covariance[2], # the covariance between both
                                       self.grads_prev_variance)]
 
-        #self.variance_update_stuff()
-        #tract the variance of the updates
         self.monitor_updates_variance()
 
 
@@ -231,10 +224,6 @@ class VAE(object):
         ep = np.random.randn(n, n_mc, n_iw, ds[0]).astype(floatX)
         return self.accumulate_gradients_func(input, ep, w)
 
-    def accumulate_grads2(self, input, n_mc, n_iw, w):
-        n = input.shape[0]
-        ep = np.random.randn(n, n_mc, n_iw, ds[0]).astype(floatX)
-        return self.accumulate_grads2_func(input, ep, w)
 
     def accumulate_delta_var(self, input, n_mc, n_iw, w, lr):
         n = input.shape[0]
@@ -249,7 +238,7 @@ class VAE(object):
     def monitor_updates_variance(self):
         shapes = [p.get_value().shape for p in self.params_curr]
 
-        vars = [self.lr*g for g in self.deltas]
+        vars = [y for x, y in self.updates]#[self.lr*g for g in self.deltas]
         all_cumulate, counter, accumulate_all_ms_func, reset_all, get_variable_variance_func, all_cov = self.tract_covariance(vars, None,
                                                                                                                                    shapes, 1,
                                                                                                                                    [
@@ -472,129 +461,6 @@ class VAE(object):
         # )
         #
         # return accumulate_m1, accumulate_m2, counter, accumulate_all_ms_func, reset_all, get_variable_variance_func, variable_variance
-
-    def variance_update_stuff(self):
-
-
-        # for the variance
-
-        self.deltas_accumulate = [
-            theano.shared(np.zeros(p.get_value().shape).astype(np.float32))
-            for p in self.params_curr
-            ]
-
-        self.deltas2_accumulate = [
-            theano.shared(np.zeros(p.get_value().shape).astype(np.float32))
-            for p in self.params_curr
-            ]
-
-        # var ** 2
-        # We assume that the minibatch size is one.
-        acc_deltas2_update = {c: c for c in self.deltas2_accumulate}
-        for ex in [self.deltas]:
-            for cummul, grad in zip(self.deltas2_accumulate, ex):
-                acc_deltas2_update[cummul] = acc_deltas2_update[cummul] + grad ** 2
-
-
-        acc_deltas_update = {c: c for c in self.deltas_accumulate}
-        for ex in [self.deltas]:
-            for cummul, grad in zip(self.deltas_accumulate, ex):
-                acc_deltas_update[cummul] = acc_deltas_update[cummul] + grad
-
-        reset_all_deltas_update = [
-            (a, a * np.float32(0.))
-            for a in self.deltas2_accumulate + self.deltas_accumulate
-            ]
-
-        self.deltas_var = [
-            m2/self.counter - T.power(m1/self.counter, 2) for m1, m2 in zip(self.deltas_accumulate, self.deltas2_accumulate)
-        ]
-
-
-        acc_deltas2_update.update(acc_deltas_update)
-        self.accumulate_all_deltas_func = theano.function(
-            inputs=[self.inpv, self.ep, self.w],
-            updates=acc_deltas2_update
-        )
-
-        self.reset_deltas = theano.function(inputs=[], updates=reset_all_deltas_update)
-
-        self.get_var_func = theano.function(
-            inputs=[], outputs=self.deltas_var
-        )
-
-    def cov_stuff(self):
-
-        # For the covariance
-        self.cov_accumulate = [
-            theano.shared(np.zeros(p.get_value().shape).astype(np.float32))
-            for p in self.params_curr
-            ]
-
-        self.covx_accumulate = [
-            theano.shared(np.zeros(p.get_value().shape).astype(np.float32))
-            for p in self.params_curr
-            ]
-
-        self.covy_accumulate = [
-            theano.shared(np.zeros(p.get_value().shape).astype(np.float32))
-            for p in self.params_curr
-            ]
-
-        self.counter_conv = theano.shared(np.float32(0.))
-
-        # covariance stuff
-        # We assume that the minibatch size is one.
-        acc_cov_update = {c: c for c in self.cov_accumulate}
-        for x, y in zip([self.params_curr], [self.params_prev]):
-            for cummul, grad_x, grad_y in zip(self.cov_accumulate, x, y):
-                acc_cov_update[cummul] = acc_cov_update[cummul] + grad_x*grad_y
-
-        acc_covx_update = {c: c for c in self.covx_accumulate}
-        for x in [self.params_curr]:
-            for cummul, grad_x in zip(self.covx_accumulate, x):
-                acc_covx_update[cummul] = acc_covx_update[cummul] + grad_x
-
-        acc_covy_update = {c: c for c in self.covy_accumulate}
-        for y in [self.grads_prev]:
-            for cummul, grad_y in zip(self.covy_accumulate, y):
-                acc_covy_update[cummul] = acc_covy_update[cummul] + grad_y
-
-        count_update = {self.counter_conv: self.counter_conv + 1}
-        reset_count_update = [(self.counter_conv, np.float32(0.))]
-
-        reset_cov_update = [
-            (a, a * np.float32(0.))
-            for a in self.cov_accumulate + self.covx_accumulate + self.covy_accumulate
-            ]
-
-        div = (self.counter_conv - 0)
-        self.cov = [
-            (c_xy/div - (c_x/div)*(c_y/div))
-            for c_xy, c_x, c_y in zip(self.cov_accumulate,
-                                   self.covx_accumulate,
-                                   self.covy_accumulate)
-            ]
-
-        updates = {}
-        updates.update(acc_cov_update)
-        updates.update(acc_covx_update)
-        updates.update(acc_covy_update)
-        updates.update(count_update)
-
-        self.accumulate_cov_func = theano.function(
-            inputs=[self.inpv, self.ep, self.w],
-            updates=updates
-        )
-
-        self.reset_cov = theano.function(
-            inputs=[], updates=reset_cov_update + reset_count_update
-        )
-
-        self.get_cov_func = theano.function(
-            inputs=[], outputs=self.cov
-        )
-
 
 
 
