@@ -29,9 +29,12 @@ sigmoid = lasagne.nonlinearities.sigmoid
 
 
 ds = [50,200,200,784]
-lr_default = 0.001 # learning rate
+lr_default = 0.01 # learning rate
 clip_grad = 1
 max_norm = 5
+
+update_type = "sgd"
+
 
 def get_encoder():
 
@@ -138,7 +141,7 @@ class VAE(object):
         self.params = get_all_params(self.enc_m) + \
                       get_all_params(self.enc_s) + \
                       get_all_params(self.dec)
-        self.updates = lasagne.updates.adam(self.loss,self.params,self.lr)
+        #self.updates = lasagne.updates.adam(self.loss,self.params,self.lr)
 
         self.grads = T.grad(self.loss, self.params)
 
@@ -146,11 +149,21 @@ class VAE(object):
                                                             max_norm=max_norm)
         self.cgrads = [T.clip(g, -clip_grad, clip_grad) for g in self.mgrads]
 
-        self.updates = lasagne.updates.adam(self.cgrads,
+        if update_type == "adam":
+            self.updates = lasagne.updates.adam(self.cgrads,
                                             self.params,
                                             beta1=0.9,
                                             beta2=0.999,
                                             epsilon=1e-4,
+                                            learning_rate=self.lr)
+        elif update_type == "sgd":
+            self.updates = lasagne.updates.sgd(self.cgrads,
+                                            self.params,
+                                            learning_rate=self.lr)
+
+        elif update_type == "momentum":
+            self.updates = lasagne.updates.mo(self.cgrads,
+                                            self.params,
                                             learning_rate=self.lr)
 
         print '\tgetting train func'
@@ -353,47 +366,54 @@ class VAE(object):
 
         return [vars[-2]]
 
-def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1,w=lambda t:1.):
 
-    print '\n\ntraining with epochs:{}, batchsize:{}'.format(epochs,bs)
+def train_model(model, epochs=10, bs=64, n_mc=1, n_iw=1, cumulate_cov=False, w=lambda t: 1.):
+    print '\n\ntraining with epochs:{}, batchsize:{}'.format(epochs, bs)
+
+    def data_generator(batch_size=bs):
+        for i in range(50000 / bs):
+            yield train_x[i * batch_size:(i + 1) * batch_size].reshape(batch_size, 28 * 28)
 
     t = 0
+    #lr = 0.01
     records = list()
-    for e in range(epochs):
+    variance_monitoring = []
 
+    for e in range(epochs):  # epochs):
 
-        # For the variance:
+        i = 0
+        for x in data_generator():
 
-        #model.reset()
-        #for i in range(50000/bs):
-        #    x = train_x[i*bs:(i+1)*bs].reshape(bs,28*28)
-        #    model.accumulate_gradients(x, n_mc, n_iw, w(t))
-
-        model.reset_delta()
-        for i in range(50000/bs):
-            x = train_x[i:(i+1)].reshape(1,28*28)
-            model.accumulate_delta_var(x,n_mc,n_iw,w(t))
-
-        print "The average update norm is:"
-        vars = model.get_delta_variance_func()
-        vars_norm = np.linalg.norm(vars[-2])
-        print np.mean(vars_norm)
-
-
-        for i in range(50000/bs):
-            x = train_x[i*bs:(i+1)*bs].reshape(bs,28*28)
-
-            loss = model.train(x,n_mc,n_iw,w(t))
+            loss = model.train(x, n_mc, n_iw, w(t))
             records.append(loss)
+            if t % 50 == 0:
+                print "t: {}, e: {}, i: {}, loss: {}".format(t, e, i, loss)
 
-            if t%50 == 0:
-                print t,e,i, loss
-            t+=1
+            t += 1
 
-            if t==10:
+            if t == 10:
                 break
+            i += 1
 
-    return records
+            if t % 300 == 0:
+                model.reset_delta()
+                for x in data_generator(1):
+                    # variance of the updates
+                    model.accumulate_delta_var(x, n_mc, n_iw, w(t), lr=lr_default)
+                    # variance of the grads.
+                    #model.accumulate_grad_prev_var(x, n_mc, n_iw, w(t))
+
+                print "The average update norm is:"
+                vars = model.get_delta_variance_func()
+                vars_norm = [np.linalg.norm(p_v) for p_v in vars]
+                print vars_norm  # [ np.mean(p_v) for p_v in vars_norm]
+                variance_monitoring.append(vars_norm)
+
+                # if t==100:
+                #    print "quitting"
+                #    break
+
+    return records, variance_monitoring
 
 
 def train_model2(model,bs=20,n_mc=1,n_iw=1,w=lambda t:1.):
@@ -470,12 +490,37 @@ if __name__ == '__main__':
     ]
 
     toplots = list()
+    all_updates_var = []
+
+    update_type = "momentum"
+    print "doing", update_type
 
     for test in tests:
         print '\n\nn_epochs:{}, batchsize:{}, n_mc:{}, n_iw:{}'.format(*test)
         model = VAE()
-        records = train_model(model,*test)
+        records, updates_var = train_model(model,*test)
         toplots.append(records)
+        all_updates_var.append(updates_var)
+
+    #print all_updates_var
+    with open("{}_variance_10.pkl".format(update_type), 'w') as f:
+        pickle.dump(all_updates_var, f)
+
+    with open("{}_loss_10.pkl".format(update_type), 'w') as f:
+            pickle.dump(toplots, f)
+
+
+    fig = plt.figure(figsize=(8,8))
+    for i in range(len(tests)):
+        ax = fig.add_subplot(2,2,i+1)
+        ax.plot(toplots[i])
+        plt.title(tests[i])
+        plt.ylim((80,250))
+
+    plt.savefig('vae_iwae_example.jpg',format='jpeg')
+    plt.savefig('vae_iwae_example.tiff',format='tiff')
+
+
 
 
     fig = plt.figure(figsize=(8,8))
