@@ -33,12 +33,14 @@ update_fun = {
 if __name__ == "__main__":
     path = r'/data/lisa/data/mnist/mnist.pkl.gz'
     batch_size = 64
+    epochs = 50
+    lr = 0.0001
     train_x, train_y, _, _, _, _ = load_mnist(path)
     data_x = theano.shared(train_x.astype(np.float32))
-    data_y = theano.shared(train_y.astype(np.float32))
+    data_y = theano.shared(train_y.astype(np.int32))
 
-    W = theano.shared(np.zeros(28 * 28, 10).astype(np.float32))
-    b = theano.shared(np.zeros(10).astype(np.float32))
+    W = theano.shared(np.zeros((28 * 28, 10)).astype(np.float32))
+    b = theano.shared(np.zeros((10,)).astype(np.float32))
     params = [W, b]
 
     X = T.matrix('X')
@@ -55,9 +57,10 @@ if __name__ == "__main__":
     train = theano.function(
         inputs=[idx],
         outputs=cost,
+        updates=updates,
         givens={
-            X:data_x[idx * batch_size:(idx + 1) * batch_size],
-            y:data_y[idx * batch_size:(idx + 1) * batch_size],
+            X: data_x[idx * batch_size:(idx + 1) * batch_size],
+            y: data_y[idx * batch_size:(idx + 1) * batch_size],
         }
     )
 
@@ -65,8 +68,8 @@ if __name__ == "__main__":
         inputs=[idx],
         outputs=gradients,
         givens={
-            X:data_x[idx:(idx + 1)],
-            y:data_y[idx:(idx + 1)],
+            X: data_x[idx:(idx + 1)],
+            y: data_y[idx:(idx + 1)],
         }
     )
 
@@ -76,6 +79,7 @@ if __name__ == "__main__":
         count = train_x.shape[0]
         for i in xrange(count):
             grads = per_instance_gradient(i)
+            grads = [np.array(g) for g in grads]
             if acc_grad is None:
                 acc_grad = [np.zeros(g.shape).astype(np.float32)
                             for g in grads]
@@ -88,7 +92,7 @@ if __name__ == "__main__":
                      for ag, ags in zip(acc_grad, acc_grad_sqr)]
         return variances
 
-    batches = math.ceil(train_x.shape[0] / float(batch_size))
+    batches = int(math.ceil(train_x.shape[0] / float(batch_size)))
     iterations = 0
     for epoch in xrange(epochs):
         batch_idxs = range(batches)
@@ -96,5 +100,5 @@ if __name__ == "__main__":
         for i in batch_idxs:
             print train(i)
             iterations += 1
-            if iterations % 100 = 0:
+            if iterations % 100 == 0:
                 variances = calculate_variance()
