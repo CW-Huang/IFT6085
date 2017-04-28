@@ -51,7 +51,7 @@ if __name__ == "__main__":
     cost = loss + 1e-4 * sum(T.sum(T.sqr(w)) for w in params)
     gradients = T.grad(cost, wrt=params)
 
-    for update_type in update_fun:
+    for update_type in ["sgd"]:
         updates = update_fun[update_type](gradients, params, lr)
         deltas = [updates[p] - p for p in params]
 

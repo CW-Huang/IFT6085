@@ -7,6 +7,7 @@ import lasagne
 import math
 import random
 
+
 def load_mnist(path):
 
     tr, va, te = pickle.load(gzip.open(path, 'r'))
@@ -24,12 +25,14 @@ def load_mnist(path):
 
     return train_x, train_y, valid_x, valid_y, test_x, test_y
 
+
 def build_model(X, y, W, b):
+    params = [W, b]
     y_hat = T.nnet.softmax(T.dot(X, W) + b)
     loss = T.mean(T.nnet.categorical_crossentropy(y_hat, y))
     cost = loss + 1e-4 * sum(T.sum(T.sqr(w)) for w in params)
     gradients = T.grad(cost, wrt=params)
-    return cost, gradients
+    return cost, params, gradients
 
 
 update_fun = {
@@ -55,30 +58,28 @@ if __name__ == "__main__":
     reg_W = theano.shared(np.zeros((28 * 28, 10)).astype(np.float32))
     reg_b = theano.shared(np.zeros((10,)).astype(np.float32))
 
-
-    params_curr = [W, b]
-    params_prev = [W_, b_]
     mean_prev = [reg_W, reg_b]
 
     X = T.matrix('X')
     y = T.ivector('y')
-    cost, gradients = build_model(X, y, W, b)
-    _, prev_gradients = build_model(X, y, W_, b_)
+    cost, params, gradients = build_model(X, y, W, b)
+    _, prev_params, prev_gradients = build_model(X, y, W_, b_)
 
     update_type = "sgd"
 
     updates = update_fun[update_type](gradients, params, lr)
-    deltas = [updates[p] - p for p in params]
-    prev_updates = update_fun[update_type](prev_gradients, params, lr)
-    prev_deltas = [updates[p] - p for p in params]
+    deltas = [-updates[p] + p for p in params]
+    prev_updates = update_fun[update_type](prev_gradients, prev_params, lr)
+    prev_deltas = [-prev_updates[p] + p for p in prev_params]
 
     calculate_reg = theano.function(
         inputs=[],
         updates=[(w, g) for w, g in zip(mean_prev, prev_deltas)],
-        givens={X:data_x, y:data_y}
+        givens={X: data_x, y: data_y}
     )
     copy_params = theano.function(
-       updates=[(_w, w) for _w, w in zip(params_prev, params_curr)]
+        inputs=[],
+        updates=[(_w, w) for _w, w in zip(prev_params, params)]
     )
     svrg_updates = [(p, p - (d - pd + reg))
                     for p, d, pd, reg in zip(params, deltas, prev_deltas,
@@ -86,7 +87,7 @@ if __name__ == "__main__":
     idx = T.iscalar('idx')
     train = theano.function(
         inputs=[idx],
-        outputs=loss,
+        outputs=cost,
         updates=svrg_updates,
         givens={
             X: data_x[idx * batch_size:(idx + 1) * batch_size],
@@ -126,7 +127,7 @@ if __name__ == "__main__":
     batches = int(math.ceil(train_x.shape[0] / float(batch_size)))
     iterations = 0
 
-    with gzip.open("%s_method_log.pkl.gz" % update_type, 'wb') as f:
+    with gzip.open("%s_svrg_method_log.pkl.gz" % update_type, 'wb') as f:
         for epoch in xrange(epochs):
             copy_params()
             calculate_reg()
