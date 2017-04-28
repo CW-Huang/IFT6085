@@ -68,8 +68,9 @@ if __name__ == "__main__":
     update_type = "sgd"
 
     updates = update_fun[update_type](gradients, params, lr)
-    deltas = [-updates[p] + p for p in params]
     prev_updates = update_fun[update_type](prev_gradients, prev_params, lr)
+
+    deltas = [-updates[p] + p for p in params]
     prev_deltas = [-prev_updates[p] + p for p in prev_params]
 
     calculate_reg = theano.function(
@@ -97,8 +98,9 @@ if __name__ == "__main__":
 
     per_instance_gradient = theano.function(
         inputs=[idx],
-        outputs=[(d - pd + reg)
-                 for d, pd, reg in zip(deltas, prev_deltas, mean_prev)],
+        outputs=deltas + prev_deltas,
+#        outputs=[(d - pd + reg)
+#                 for d, pd, reg in zip(deltas, prev_deltas, mean_prev)],
         givens={
             X: data_x[idx:(idx + 1)],
             y: data_y[idx:(idx + 1)],
@@ -106,23 +108,39 @@ if __name__ == "__main__":
     )
 
     def calculate_variance():
-        acc_grad = None
-        acc_grad_sqr = None
+        sum_grad = None
+        sum_prev_grad = None
+        sum_grad_sqr = None
+        sum_grad_prev_grad = None
+
         count = train_x.shape[0]
         for i in xrange(count):
             grads = per_instance_gradient(i)
             grads = [np.array(g) for g in grads]
-            if acc_grad is None:
-                acc_grad = [np.zeros(g.shape).astype(np.float32)
-                            for g in grads]
-                acc_grad_sqr = [np.zeros(g.shape).astype(np.float32)
-                                for g in grads]
-            for ag, ags, g in zip(acc_grad, acc_grad_sqr, grads):
-                ag += g
-                ags += g**2
-        variances = [ags / count - (ag / count)**2
-                     for ag, ags in zip(acc_grad, acc_grad_sqr)]
-        return variances
+            curr_grads = grads[:len(grads) // 2]
+            prev_grads = grads[len(grads) // 2:]
+
+            if sum_grad is None:
+                sum_grad = [np.zeros(g.shape).astype(np.float32) for g in grads]
+                sum_prev_grad = [np.zeros(g.shape).astype(np.float32) for g in grads]
+                sum_grad_grad = [np.zeros(g.shape).astype(np.float32) for g in grads]
+                sum_grad_prev_grad = [np.zeros(g.shape).astype(np.float32) for g in grads]
+
+            for sg, spg, sgg, sgpg, g, pg in zip(sum_grad, sum_prev_grad,
+                                                 sum_grad_grad, sum_grad_prev_grad,
+                                                 curr_grads, prev_grads):
+
+                sg += g
+                spg += pg
+                sgg += g * g
+                sgpg += pg * g
+
+        grad_variance = [sgg / count - (sg / count)**2
+                         for sg, sgg in zip(sum_grad, sum_grad_grad)]
+        grad_covariance = [sgpg / count - (sg / count) * (spg / count)
+                           for sg, spg, sgpg in zip(sum_grad, sum_prev_grad,
+                                                    sum_grad_prev_grad)]
+        return grad_variance, grad_covariance
 
     batches = int(math.ceil(train_x.shape[0] / float(batch_size)))
     iterations = 0
@@ -137,7 +155,9 @@ if __name__ == "__main__":
                 logitem = {"cost": train(i)}
                 print logitem["cost"]
                 if iterations % 50 == 0:
-                    variances = calculate_variance()
-                    logitem["grad_variance"] = variances
+                    grad_variances, grad_covariances = calculate_variance()
+                    logitem["grad_variances"] = grad_variances
+                    logitem["grad_corvariances"] = grad_covariances_variances
+
                 iterations += 1
                 pickle.dump(logitem, f, 2)
