@@ -116,6 +116,8 @@ class VAE(object):
         self.ep = T.tensor4('ep')
         self.w = T.scalar('w')
         self.lr = T.scalar('lr')      # learning rate
+        self.use_alpha = use_alpha
+
 
         batch_size = T.cast(self.inpv.shape[0], 'float32')
 
@@ -180,7 +182,8 @@ class VAE(object):
                                       self.grads_prev,
                                       self.grads_accumulate,
                                       self.all_grads_covariance[2], # the covariance between both
-                                      self.grads_prev_variance)]
+                                      #self.grads_prev_variance)]
+                                    self.all_grads_covariance[1])]
 
 
 
@@ -242,13 +245,19 @@ class VAE(object):
 
         #Getting our update direction
         vars = [y -p for (x, y), p in zip(self.updates.items(), self.params_curr)]#[self.lr*g for g in self.deltas]
+
+
+        dem_mod = 0
+        if self.use_alpha:
+            dem_mod = 1
+
         all_cumulate, counter, accumulate_all_ms_func, reset_all, get_variable_variance_func, all_cov = self.tract_covariance(vars, None,
                                                                                                                                    shapes, 1,
                                                                                                                                    [
                                                                                                                                        self.inpv,
                                                                                                                                        self.ep,
                                                                                                                                        self.w,
-                                                                                                                                   self.lr])
+                                                                                                                                   self.lr], dem_mod)
 
         self.all_cumulate = all_cumulate
         self.counter_delta = counter
@@ -288,7 +297,7 @@ class VAE(object):
         self.get_all_grad_variance_func = get_variable_variance_func
         self.all_grads_covariance = all_cov
 
-    def tract_covariance(self, variable1, variable2, shapes, inc, inputs):
+    def tract_covariance(self, variable1, variable2, shapes, inc, inputs, dem_mod=0):
 
         """
         Return the covariance of variable 1 and 2, and the variance of v1 and v2.
@@ -371,9 +380,9 @@ class VAE(object):
         acc_m12_update = second_moment(accumulate_m12, variable1, variable2)
         acc_m22_update = second_moment(accumulate_m22, variable2, variable2)
 
-        cov12 = [m2/counter - m1_1*m1_2 for m1_1, m1_2, m2 in zip(accumulate_m1, accumulate_m2, accumulate_m12)]
-        cov11 = [m2/counter - m1_1*m1_2 for m1_1, m1_2, m2 in zip(accumulate_m1, accumulate_m1, accumulate_m11)]
-        cov22 = [m2/counter - m1_1*m1_2 for m1_1, m1_2, m2 in zip(accumulate_m2, accumulate_m2, accumulate_m22)]
+        cov12 = [counter/(counter-dem_mod)*(m2/counter - (m1_1/counter)*(m1_2/counter)) for m1_1, m1_2, m2 in zip(accumulate_m1, accumulate_m2, accumulate_m12)]
+        cov11 = [counter/(counter-dem_mod)*(m2/counter - (m1_1/counter)*(m1_2/counter))  for m1_1, m1_2, m2 in zip(accumulate_m1, accumulate_m1, accumulate_m11)]
+        cov22 = [counter/(counter-dem_mod)*(m2/counter - (m1_1/counter)*(m1_2/counter))  for m1_1, m1_2, m2 in zip(accumulate_m2, accumulate_m2, accumulate_m22)]
 
         reset_all_ms_update = [
             (a, a * np.float32(0.))
@@ -488,6 +497,7 @@ def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1, cumulate_cov=False, w=lambd
     records = list()
     updates_var = []
     variance_monitoring = []
+    covs_and_co = None
 
 
     for e in range(epochs):#epochs):
@@ -528,12 +538,12 @@ def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1, cumulate_cov=False, w=lambd
                 for ex in x:
                     model.accumulate_batch_cov(ex.reshape(1, ex.shape[0]), n_mc, n_iw, w(t))
 
-                #covs = model.get_cov_func()
-                #covs = model.get_all_grad_variance_func[2]()
-                #vars = model.get_all_grad_variance_func[1]()
-                #vars = model.get_grad_prev_variance_func()
-                #alphas = [cov/var for cov, var in zip(covs, vars)]
-                #print np.mean(np.absolute(alphas[-2]))
+                # #covs = model.get_cov_func()
+                # covs = model.get_all_grad_variance_func[2]()
+                # #vars = model.get_all_grad_variance_func[1]()
+                # vars = model.get_grad_prev_variance_func()
+                # alphas = [cov/var for cov, var in zip(covs, vars)]
+                # print np.mean(np.absolute(alphas[-2]))
 
             loss = model.train(x, n_mc, n_iw, w(t), lr=lr)
             records.append(loss)
@@ -565,8 +575,26 @@ def train_model(model,epochs=10,bs=64,n_mc=1,n_iw=1, cumulate_cov=False, w=lambd
             #    print "quitting"
             #    break
 
+        # at the ead of the fifth epoch
+        if False:#e == 5:
+            # The correlation
+            print "getting the covariance and all the stuff"
+            model.reset_all_grad()
 
-    return records, variance_monitoring
+            # We check all the example of the
+            for x in data_generator(1):
+
+                    # Get the alpha
+                for ex in x:
+                    model.accumulate_batch_cov(ex.reshape(1, ex.shape[0]), n_mc, n_iw, w(t))
+
+
+            covs_and_co = [model.get_all_grad_variance_func[i]() for i in range(3)]
+            print "Done"
+            break
+
+
+    return records, variance_monitoring, covs_and_co
 
 if __name__ == '__main__':
     import matplotlib as mpl
@@ -578,17 +606,19 @@ if __name__ == '__main__':
     tests = [
         #[10,20,1,1, False],
         [10, 20, 1, 1, True],
+        #[10, 20, 1, 1, False],
         #[10*50,50*20,1,1, False],
         #[10,20,50,1,False],
         #[10,20,1,50, False]
     ]
     toplots = list()
     all_updates_var = []
+    covs_and_co = None
 
     for test in tests:
         print '\n\nn_epochs:{}, batchsize:{}, n_mc:{}, n_iw:{}'.format(*test)
         model = VAE(use_alpha=test[-1])
-        records, updates_var = train_model(model,*test)
+        records, updates_var, covs_and_co = train_model(model,*test)
         toplots.append(records)
         all_updates_var.append(updates_var)
 
@@ -602,11 +632,14 @@ if __name__ == '__main__':
     plt.savefig('vae_iwae_example.tiff',format='tiff')
 
     #print all_updates_var
-    with open("svrgre_variance_10.pkl", 'w') as f:
+    with open("svrgre_3_variance_10.pkl", 'w') as f:
         pickle.dump(all_updates_var, f)
 
-    with open("svrgre_loss_10.pkl", 'w') as f:
+    with open("svrgre_3_loss_10.pkl", 'w') as f:
             pickle.dump(toplots, f)
+
+    with open("svrgre_3_covnco_10.pkl", 'w') as f:
+        pickle.dump(covs_and_co, f)
 
 
 

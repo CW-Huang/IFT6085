@@ -29,7 +29,7 @@ sigmoid = lasagne.nonlinearities.sigmoid
 
 
 ds = [50,200,200,784]
-lr_default = 0.01 # learning rate
+lr_default = 0.001 # learning rate
 clip_grad = 1
 max_norm = 5
 
@@ -162,7 +162,7 @@ class VAE(object):
                                             learning_rate=self.lr)
 
         elif update_type == "momentum":
-            self.updates = lasagne.updates.mo(self.cgrads,
+            self.updates = lasagne.updates.momentum(self.cgrads,
                                             self.params,
                                             learning_rate=self.lr)
 
@@ -265,9 +265,9 @@ class VAE(object):
         acc_m12_update = second_moment(accumulate_m12, variable1, variable2)
         acc_m22_update = second_moment(accumulate_m22, variable2, variable2)
 
-        cov12 = [m2/counter - m1_1*m1_2 for m1_1, m1_2, m2 in zip(accumulate_m1, accumulate_m2, accumulate_m12)]
-        cov11 = [m2/counter - m1_1*m1_2 for m1_1, m1_2, m2 in zip(accumulate_m1, accumulate_m1, accumulate_m11)]
-        cov22 = [m2/counter - m1_1*m1_2 for m1_1, m1_2, m2 in zip(accumulate_m2, accumulate_m2, accumulate_m22)]
+        cov12 = [m2/counter - (m1_1/counter)*(m1_2/counter) for m1_1, m1_2, m2 in zip(accumulate_m1, accumulate_m2, accumulate_m12)]
+        cov11 = [m2/counter - (m1_1/counter)*(m1_2/counter) for m1_1, m1_2, m2 in zip(accumulate_m1, accumulate_m1, accumulate_m11)]
+        cov22 = [m2/counter - (m1_1/counter)*(m1_2/counter) for m1_1, m1_2, m2 in zip(accumulate_m2, accumulate_m2, accumulate_m22)]
 
         reset_all_ms_update = [
             (a, a * np.float32(0.))
@@ -482,100 +482,103 @@ if __name__ == '__main__':
 # fix learning rate
 #==============================================================================
 
-    tests = [
-        [10,20,1,1],
-        #[10*50,50*20,1,1],
-        #[10,20,50,1],
-        #[10,20,1,50]
-    ]
-
-    toplots = list()
-    all_updates_var = []
-
-    update_type = "momentum"
-    print "doing", update_type
-
-    for test in tests:
-        print '\n\nn_epochs:{}, batchsize:{}, n_mc:{}, n_iw:{}'.format(*test)
-        model = VAE()
-        records, updates_var = train_model(model,*test)
-        toplots.append(records)
-        all_updates_var.append(updates_var)
-
-    #print all_updates_var
-    with open("{}_variance_10.pkl".format(update_type), 'w') as f:
-        pickle.dump(all_updates_var, f)
-
-    with open("{}_loss_10.pkl".format(update_type), 'w') as f:
-            pickle.dump(toplots, f)
-
-
-    fig = plt.figure(figsize=(8,8))
-    for i in range(len(tests)):
-        ax = fig.add_subplot(2,2,i+1)
-        ax.plot(toplots[i])
-        plt.title(tests[i])
-        plt.ylim((80,250))
-
-    plt.savefig('vae_iwae_example.jpg',format='jpeg')
-    plt.savefig('vae_iwae_example.tiff',format='tiff')
-
-
-
-
-    fig = plt.figure(figsize=(8,8))
-    for i in range(len(tests)):
-        ax = fig.add_subplot(2,2,i+1)
-        ax.plot(toplots[i])
-        plt.title(tests[i])
-        plt.ylim((80,250))
-
-    plt.savefig('vae_iwae_example.jpg',format='jpeg')
-    plt.savefig('vae_iwae_example.tiff',format='tiff')
+    # tests = [
+    #     [10,20,1,1],
+    #     #[20,20,1,1],
+    #     #[10*50,50*20,1,1],
+    #     #[10,20,50,1],
+    #     #[10,20,1,50]
+    # ]
+    #
+    # toplots = list()
+    # all_updates_var = []
+    #
+    # #update_type = "momentum"
+    # for ty in ['adam']:
+    #     update_type = ty
+    #     print "doing", update_type
+    #
+    #     for test in tests:
+    #         print '\n\nn_epochs:{}, batchsize:{}, n_mc:{}, n_iw:{}'.format(*test)
+    #         model = VAE()
+    #         records, updates_var = train_model(model,*test)
+    #         toplots.append(records)
+    #         all_updates_var.append(updates_var)
+    #
+    #     #print all_updates_var
+    #     with open("{}_all_4_variance_10.pkl".format(update_type), 'w') as f:
+    #         pickle.dump(all_updates_var, f)
+    #
+    #     with open("{}_all_4_loss_10.pkl".format(update_type), 'w') as f:
+    #             pickle.dump(toplots, f)
+    #
+    #
+    #     fig = plt.figure(figsize=(8,8))
+    #     for i in range(len(tests)):
+    #         ax = fig.add_subplot(2,2,i+1)
+    #         ax.plot(toplots[i])
+    #         plt.title(tests[i])
+    #         plt.ylim((80,250))
+    #
+    #     plt.savefig('sgd_vae_iwae_example.jpg',format='jpeg')
+    #     plt.savefig('sgd_vae_iwae_example.tiff',format='tiff')
+    #
+    #
+    #
+    #
+    #     fig = plt.figure(figsize=(8,8))
+    #     for i in range(len(tests)):
+    #         ax = fig.add_subplot(2,2,i+1)
+    #         ax.plot(toplots[i])
+    #         plt.title(tests[i])
+    #         plt.ylim((80,250))
+    #
+    #     plt.savefig('sgd_vae_iwae_example.jpg',format='jpeg')
+    #     plt.savefig('sgd_vae_iwae_example.tiff',format='tiff')
 
 
 #==============================================================================
 # norm of variance of gradient estimate
 #==============================================================================
-#    # variance of gradient
-#     model = VAE()
-#
-#     bs = 64
-#     for i in range(50000/bs):
-#        x = train_x[i*bs:(i+1)*bs].reshape(bs,28*28)
-#        loss = model.train(x,1,1,1.)
-#
-#
-#     f_grads = theano.function([model.inpv,model.ep,model.w,
-#                               model.n_mc,model.n_iw],
-#                              model.grads)
-#     rms = lambda xx: (xx**2).mean()**0.5
-#     l2norm = lambda xx: (xx**2).sum()**0.5
-#
-#     x = train_x[0].reshape(1,28*28)
-#     n = x.shape[0]
-#
-#
-#     norm_operator = rms
-#     def get_norm_var(mc,iw):
-#        norms = list()
-#        for i in range(100):
-#            ep = np.random.randn(n,mc,iw,ds[0]).astype(floatX)
-#            norms.append(f_grads(x,ep,1.,mc,iw))
-#        return [norm_operator(xx) for xx in np.array(norms).var(0)]
-#
-#     tests = [
-#        [1,1],
-#        [1,10],
-#        [1,100],
-#        [10,1],
-#        [100,1]
-#     ]
-#
-#     for (mc,iw) in tests:
-#        plt.plot(get_norm_var(mc,iw))
-#
-#
-#     plt.legend(['mc{}iw{}'.format(mc,iw) for (mc,iw) in tests],loc=1)
-#     plt.savefig('rms_var_params.jpg',format='jpeg')
+   #variance of gradient
+    model = VAE()
+
+    bs = 64
+    for i in range(50000/bs):
+       x = train_x[i*bs:(i+1)*bs].reshape(bs,28*28)
+       loss = model.train(x,1,1,1.)
+
+
+    f_grads = theano.function([model.inpv,model.ep,model.w,
+                              model.n_mc,model.n_iw],
+                             model.grads)
+    rms = lambda xx: (xx**2).mean()**0.5
+    l2norm = lambda xx: (xx**2).sum()**0.5
+
+    x = train_x[0].reshape(1,28*28)
+    n = x.shape[0]
+
+
+    norm_operator = rms
+    def get_norm_var(mc,iw):
+       norms = list()
+       for i in range(100):
+           ep = np.random.randn(n,mc,iw,ds[0]).astype(floatX)
+           norms.append(f_grads(x,ep,1.,mc,iw))
+       return [norm_operator(xx) for xx in np.array(norms).var(0)]
+
+    tests = [
+       [1,1],
+       [1,10],
+       [1,100],
+       [10,1],
+       [100,1]
+    ]
+
+    for (mc,iw) in tests:
+       plt.plot(get_norm_var(mc,iw))
+
+
+    plt.legend(['mc{}iw{}'.format(mc,iw) for (mc,iw) in tests],loc=1)
+    plt.savefig('rms_var_params.jpg',format='jpeg')
 
